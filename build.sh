@@ -1,12 +1,12 @@
 #!/bin/bash
 
 # ============================================================================
-# Build Script for POC-04-A: Keycloak External Roles Provider
+# Build Script for POC-04-B: Keycloak SAML2 Federation
 # ============================================================================
 # This script:
 # 1. Builds the custom Keycloak protocol mapper JAR
-# 2. Copies it to the Docker build context
-# 3. Optionally builds and starts Docker containers
+# 2. Builds Docker images (IdP vanilla + SP with JAR)
+# 3. Optionally starts Docker containers
 #
 # Usage:
 #   ./build.sh              # Build JAR only
@@ -27,9 +27,7 @@ NC='\033[0m' # No Color
 # Directories
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MAPPER_DIR="$PROJECT_ROOT/keycloak-roles-mapper"
-DOCKER_DIR="$PROJECT_ROOT/docker/keycloak"
 TARGET_JAR="$MAPPER_DIR/target/keycloak-roles-mapper.jar"
-DEST_JAR="$DOCKER_DIR/keycloak-roles-mapper.jar"
 
 # ============================================================================
 # Helper Functions
@@ -83,24 +81,16 @@ build_jar() {
     cd "$PROJECT_ROOT"
 }
 
-copy_jar_to_docker() {
-    print_header "Copying JAR to Docker Context"
-
-    # Create docker/keycloak directory if it doesn't exist
-    mkdir -p "$DOCKER_DIR"
-
-    # Copy JAR
-    cp "$TARGET_JAR" "$DEST_JAR"
-    print_success "JAR copied to $DEST_JAR"
-}
-
 build_docker_images() {
     print_header "Building Docker Images"
 
     cd "$PROJECT_ROOT"
 
-    print_info "Building Keycloak image with custom provider..."
-    docker-compose build keycloak
+    print_info "Building Keycloak IdP (vanilla)..."
+    docker-compose build keycloak-idp
+
+    print_info "Building Keycloak SP (with custom provider)..."
+    docker-compose build keycloak-sp
 
     print_success "Docker images built successfully"
 }
@@ -119,9 +109,11 @@ start_containers() {
     docker-compose ps
 
     echo ""
+    print_header "Access URLs"
+    print_info "Keycloak IdP: http://localhost:8180 (admin/admin)"
+    print_info "Keycloak SP:  http://localhost:8080 (admin/admin)"
+    echo ""
     print_info "Follow logs with: docker-compose logs -f"
-    print_info "Access Keycloak at: http://localhost:8080"
-    print_info "Admin credentials: admin / admin"
 }
 
 clean_all() {
@@ -134,15 +126,9 @@ clean_all() {
     cd "$MAPPER_DIR" && mvn clean
     cd "$PROJECT_ROOT"
 
-    # Remove copied JAR
-    if [ -f "$DEST_JAR" ]; then
-        rm "$DEST_JAR"
-        print_success "Removed $DEST_JAR"
-    fi
-
     # Stop and remove Docker containers
     print_info "Stopping Docker containers..."
-    docker-compose down
+    docker-compose down -v
 
     print_success "Cleanup complete"
 }
@@ -151,10 +137,10 @@ show_usage() {
     cat <<EOF
 Usage: $0 [OPTIONS]
 
-Build script for POC-04-A Keycloak External Roles Provider
+Build script for POC-04-B Keycloak SAML2 Federation
 
 Options:
-    (no args)       Build JAR and copy to Docker context
+    (no args)       Build JAR only
     --docker        Build JAR + Docker images
     --start         Build JAR + Docker images + start containers
     --clean         Clean all build artifacts and stop containers
@@ -167,9 +153,9 @@ Examples:
     $0 --clean          # Clean everything
 
 After starting containers:
-    - Keycloak Admin: http://localhost:8080 (admin/admin)
+    - Keycloak IdP: http://localhost:8180 (admin/admin) - Create users here
+    - Keycloak SP:  http://localhost:8080 (admin/admin) - Configure SAML here
     - Roles DB: localhost:5433 (keycloak/keycloak/roles)
-    - Keycloak DB: localhost:5432 (keycloak/keycloak/keycloak)
 
 EOF
 }
@@ -179,7 +165,7 @@ EOF
 # ============================================================================
 
 main() {
-    print_header "POC-04-A: Keycloak External Roles Provider - Build Script"
+    print_header "POC-04-B: Keycloak SAML2 Federation - Build Script"
 
     case "${1:-}" in
         --clean)
@@ -187,12 +173,10 @@ main() {
             ;;
         --docker)
             build_jar
-            copy_jar_to_docker
             build_docker_images
             ;;
         --start)
             build_jar
-            copy_jar_to_docker
             build_docker_images
             start_containers
             ;;
@@ -200,9 +184,8 @@ main() {
             show_usage
             ;;
         "")
-            # Default: just build and copy JAR
+            # Default: just build JAR
             build_jar
-            copy_jar_to_docker
             print_success "Build complete! Run '$0 --docker' to build Docker images."
             ;;
         *)

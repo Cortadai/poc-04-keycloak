@@ -1,8 +1,9 @@
 -- ============================================================================
--- POC-04-A: External Roles Database Schema
+-- POC-04-B: External Roles Database Schema
 -- ============================================================================
--- This script initializes the external PostgreSQL database that stores
--- user role mappings outside of Keycloak's internal database.
+-- PostgreSQL database for external user roles.
+-- Used by the custom Protocol Mapper JAR in Keycloak SP.
+-- The username must match exactly the federated user's username from SAML.
 -- ============================================================================
 
 -- Drop existing table if re-running (for idempotency)
@@ -23,14 +24,17 @@ CREATE INDEX idx_user_roles_role_name ON user_roles(role_name);
 
 -- Add comments
 COMMENT ON TABLE user_roles IS 'External roles storage for Keycloak custom mapper';
-COMMENT ON COLUMN user_roles.username IS 'Keycloak username (must match exactly)';
+COMMENT ON COLUMN user_roles.username IS 'Username from SAML assertion (must match federated user)';
 COMMENT ON COLUMN user_roles.role_name IS 'Role identifier to be added to JWT';
 
 -- ============================================================================
--- Test Data - Using individual INSERTs for compatibility
+-- Test Data
+-- ============================================================================
+-- These usernames must match the usernames created in Keycloak IdP
+-- and that come through SAML assertions.
 -- ============================================================================
 
--- Primary test user (alan.turing)
+-- Primary test user
 INSERT INTO user_roles (username, role_name) VALUES ('alan.turing', 'DEVELOPER');
 INSERT INTO user_roles (username, role_name) VALUES ('alan.turing', 'ARCHITECT');
 INSERT INTO user_roles (username, role_name) VALUES ('alan.turing', 'ADMIN');
@@ -43,8 +47,6 @@ INSERT INTO user_roles (username, role_name) VALUES ('test.user', 'TESTER');
 INSERT INTO user_roles (username, role_name) VALUES ('john.doe', 'VIEWER');
 INSERT INTO user_roles (username, role_name) VALUES ('jane.smith', 'DEVELOPER');
 INSERT INTO user_roles (username, role_name) VALUES ('jane.smith', 'TEAM_LEAD');
-INSERT INTO user_roles (username, role_name) VALUES ('bob.johnson', 'ADMIN');
-INSERT INTO user_roles (username, role_name) VALUES ('alice.williams', 'VIEWER');
 
 -- ============================================================================
 -- Verify data insertion

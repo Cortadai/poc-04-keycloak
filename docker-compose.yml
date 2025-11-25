@@ -1,21 +1,23 @@
 version: '3.8'
 
 # ============================================================================
-# POC-04-A: Keycloak with External Roles Provider
+# POC-04-B: Keycloak SAML2 Federation with External Roles Provider
 # ============================================================================
 # Services:
-# 1. roles-db: PostgreSQL for external user roles
-# 2. keycloak-db: PostgreSQL for Keycloak's internal data
-# 3. keycloak: Keycloak with custom protocol mapper
+# 1. keycloak-idp (8180): Identity Provider - usuarios nativos
+# 2. keycloak-sp (8080): Service Provider - usuarios federados + JAR custom
+# 3. keycloak-idp-db: PostgreSQL para Keycloak IdP
+# 4. keycloak-sp-db: PostgreSQL para Keycloak SP
+# 5. roles-db: PostgreSQL externa con roles (compartida)
 # ============================================================================
 
 services:
   # ==========================================================================
-  # External Roles Database
+  # External Roles Database (shared)
   # ==========================================================================
   roles-db:
     image: postgres:16-alpine
-    container_name: poc04-roles-db
+    container_name: poc04b-roles-db
     restart: unless-stopped
 
     environment:
@@ -25,13 +27,11 @@ services:
       POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
 
     volumes:
-      # Initialize database schema and test data
       - ./init-db:/docker-entrypoint-initdb.d:ro
-      # Persist data (optional - comment out for ephemeral testing)
       - roles-db-data:/var/lib/postgresql/data
 
     ports:
-      - "5433:5432"  # Exposed for external access (e.g., DBeaver)
+      - "5433:5432"
 
     networks:
       - keycloak-network
@@ -44,11 +44,11 @@ services:
       start_period: 10s
 
   # ==========================================================================
-  # Keycloak Internal Database
+  # Keycloak IdP Database
   # ==========================================================================
-  keycloak-db:
+  keycloak-idp-db:
     image: postgres:16-alpine
-    container_name: poc04-keycloak-db
+    container_name: poc04b-keycloak-idp-db
     restart: unless-stopped
 
     environment:
@@ -58,11 +58,10 @@ services:
       POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
 
     volumes:
-      # Persist Keycloak data (realms, users, clients, etc.)
-      - keycloak-db-data:/var/lib/postgresql/data
+      - keycloak-idp-db-data:/var/lib/postgresql/data
 
     ports:
-      - "5432:5432"  # Exposed for troubleshooting
+      - "5434:5432"
 
     networks:
       - keycloak-network
@@ -75,29 +74,118 @@ services:
       start_period: 10s
 
   # ==========================================================================
-  # Keycloak with Custom Provider
+  # Keycloak SP Database
   # ==========================================================================
-  keycloak:
+  keycloak-sp-db:
+    image: postgres:16-alpine
+    container_name: poc04b-keycloak-sp-db
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_DB: keycloak
+      POSTGRES_USER: keycloak
+      POSTGRES_PASSWORD: keycloak
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+
+    volumes:
+      - keycloak-sp-db-data:/var/lib/postgresql/data
+
+    ports:
+      - "5432:5432"
+
+    networks:
+      - keycloak-network
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U keycloak -d keycloak"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ==========================================================================
+  # Keycloak IdP (Identity Provider) - Puerto 8180
+  # ==========================================================================
+  # Vanilla Keycloak que actúa como IdP SAML
+  # Contiene los usuarios nativos (alan.turing, test.user)
+  # ==========================================================================
+  keycloak-idp:
     build:
       context: .
-      dockerfile: docker/keycloak/Dockerfile
-    container_name: poc04-keycloak
+      dockerfile: docker/keycloak-idp/Dockerfile
+    container_name: poc04b-keycloak-idp
     restart: unless-stopped
 
     depends_on:
-      keycloak-db:
+      keycloak-idp-db:
+        condition: service_healthy
+
+    environment:
+      # Database configuration
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://keycloak-idp-db:5432/keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: keycloak
+
+      # Admin credentials
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+
+      # Runtime settings
+      KC_HTTP_ENABLED: "true"
+      KC_HOSTNAME_STRICT: "false"
+      KC_PROXY: edge
+      KC_HEALTH_ENABLED: "true"
+      KC_METRICS_ENABLED: "true"
+      KC_LOG_LEVEL: info
+
+    ports:
+      - "8180:8080"
+
+    networks:
+      - keycloak-network
+
+    command:
+      - start
+      - --optimized
+      - --http-enabled=true
+      - --hostname-strict=false
+
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health/ready || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 10
+      start_period: 90s
+
+  # ==========================================================================
+  # Keycloak SP (Service Provider) - Puerto 8080
+  # ==========================================================================
+  # Keycloak con JAR custom que actúa como SP SAML
+  # Recibe usuarios federados del IdP via SAML2
+  # Consulta roles externos en PostgreSQL
+  # ==========================================================================
+  keycloak-sp:
+    build:
+      context: .
+      dockerfile: docker/keycloak-sp/Dockerfile
+    container_name: poc04b-keycloak-sp
+    restart: unless-stopped
+
+    depends_on:
+      keycloak-sp-db:
         condition: service_healthy
       roles-db:
         condition: service_healthy
 
     environment:
-      # Keycloak database configuration
+      # Database configuration
       KC_DB: postgres
-      KC_DB_URL: jdbc:postgresql://keycloak-db:5432/keycloak
+      KC_DB_URL: jdbc:postgresql://keycloak-sp-db:5432/keycloak
       KC_DB_USERNAME: keycloak
       KC_DB_PASSWORD: keycloak
 
-      # Keycloak admin credentials
+      # Admin credentials
       KEYCLOAK_ADMIN: admin
       KEYCLOAK_ADMIN_PASSWORD: admin
 
@@ -111,20 +199,17 @@ services:
       ROLES_DB_IDLE_TIMEOUT: 600000
       ROLES_DB_MAX_LIFETIME: 1800000
 
-      # Keycloak runtime settings
+      # Runtime settings
       KC_HTTP_ENABLED: "true"
       KC_HOSTNAME_STRICT: "false"
       KC_PROXY: edge
       KC_HEALTH_ENABLED: "true"
       KC_METRICS_ENABLED: "true"
-
-      # Logging
       KC_LOG_LEVEL: info
       QUARKUS_LOG_CATEGORY__COM_EXAMPLE_KEYCLOAK__LEVEL: debug
 
     ports:
-      - "8080:8080"  # HTTP
-      - "8443:8443"  # HTTPS (if configured)
+      - "8080:8080"
 
     networks:
       - keycloak-network
@@ -147,7 +232,7 @@ services:
 # ============================================================================
 networks:
   keycloak-network:
-    name: poc04-network
+    name: poc04b-network
     driver: bridge
 
 # ============================================================================
@@ -155,43 +240,8 @@ networks:
 # ============================================================================
 volumes:
   roles-db-data:
-    name: poc04-roles-db-data
-  keycloak-db-data:
-    name: poc04-keycloak-db-data
-
-# ============================================================================
-# Usage Instructions
-# ============================================================================
-# 1. Build the mapper JAR:
-#    ./build.sh (or manually: cd keycloak-roles-mapper && mvn clean package)
-#
-# 2. Start the stack:
-#    docker-compose up -d
-#
-# 3. Wait for Keycloak to be healthy:
-#    docker-compose logs -f keycloak
-#
-# 4. Access Keycloak Admin Console:
-#    http://localhost:8080
-#    Username: admin
-#    Password: admin
-#
-# 5. Configure (see README.md):
-#    - Create realm: example-poc
-#    - Create client: spring-client
-#    - Create user: alan.turing
-#    - Add External Database Roles Mapper to client
-#
-# 6. Test token:
-#    curl -X POST http://localhost:8080/realms/example-poc/protocol/openid-connect/token \
-#      -d "client_id=spring-client" \
-#      -d "client_secret=<YOUR_CLIENT_SECRET>" \
-#      -d "username=alan.turing" \
-#      -d "password=test123" \
-#      -d "grant_type=password"
-#
-# 7. Decode JWT at https://jwt.io to verify "external_roles" claim
-#
-# 8. Cleanup:
-#    docker-compose down -v  # -v removes volumes (data will be lost)
-# ============================================================================
+    name: poc04b-roles-db-data
+  keycloak-idp-db-data:
+    name: poc04b-keycloak-idp-db-data
+  keycloak-sp-db-data:
+    name: poc04b-keycloak-sp-db-data

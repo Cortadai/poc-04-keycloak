@@ -1,537 +1,248 @@
-# POC-04-A: Keycloak Custom Roles Provider
+# POC-04-B: Keycloak SAML2 Federation with External Roles
 
-**Custom Protocol Mapper for Keycloak that fetches user roles from an external PostgreSQL database and injects them into JWT tokens.**
+Proof of Concept que demuestra:
+1. **Federación SAML2**: Keycloak SP recibe usuarios desde Keycloak IdP via SAML
+2. **Roles externos**: Custom Protocol Mapper consulta PostgreSQL para añadir roles al JWT
 
----
-
-## 📋 Table of Contents
-
-- [Overview](#overview)
-- [Architecture](#architecture)
-- [Project Structure](#project-structure)
-- [Prerequisites](#prerequisites)
-- [Quick Start](#quick-start)
-- [Keycloak Configuration](#keycloak-configuration)
-- [Testing the Implementation](#testing-the-implementation)
-- [Troubleshooting](#troubleshooting)
-- [Advanced Configuration](#advanced-configuration)
-- [Next Steps](#next-steps)
-
----
-
-## 🎯 Overview
-
-### Context and Motivation
-
-This POC replicates the real-world scenario where:
-- Keycloak obtains users from **FortiAuthenticator via SAML2** (which pulls from LDAP)
-- Roles come from an **external database via custom JAR**
-
-**Goal**: Gain deep understanding and confidence in this architectural pattern by implementing a simplified version first.
-
-### Design Decision
-
-Split into two progressive POCs instead of tackling everything at once:
-
-**POC-04-A** (this project):
-- Keycloak with **native users** (no SAML yet)
-- Custom JAR queries roles from **PostgreSQL external database**
-- Simple approach: 1-2 Java classes
-- Objective: Master Keycloak's extension mechanism
-
-**POC-04-B** (future):
-- Full User Storage SPI implementation
-- Roles visible in Keycloak Admin Console
-- More classes, deeper Keycloak integration
-
-### Success Criteria
-
-✅ Login with `alan.turing` → JWT contains claim:
-```json
-{
-  "external_roles": ["DEVELOPER", "ARCHITECT", "ADMIN"]
-}
-```
-
-These roles are fetched from PostgreSQL, **not** from Keycloak's internal database.
-
----
-
-## 🏗️ Architecture
+## Arquitectura
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                        User Login                            │
-│                  (alan.turing / test123)                 │
-└──────────────────────────┬──────────────────────────────────┘
-                           │
-                           ▼
-┌─────────────────────────────────────────────────────────────┐
-│                      Keycloak                                │
-│  - Native users (no SAML in POC-04-A)                       │
-│  - Realm: example-poc                                          │
-│  - Client: spring-client                                     │
-└──────────────────────────┬──────────────────────────────────┘
-                           │
-                           │ Token generation triggers mapper
-                           ▼
-┌─────────────────────────────────────────────────────────────┐
-│       Custom Protocol Mapper (JAR)                           │
-│  ExternalRolesProtocolMapper.java                            │
-│  - Invoked during token creation                             │
-│  - Extracts username from UserSessionModel                   │
-└──────────────────────────┬──────────────────────────────────┘
-                           │
-                           │ JDBC query via HikariCP
-                           ▼
-┌─────────────────────────────────────────────────────────────┐
-│       External PostgreSQL Database                           │
-│  Container: roles-db                                         │
-│  Table: user_roles (username, role_name)                     │
-│  Query: SELECT role_name WHERE username = ?                  │
-└──────────────────────────┬──────────────────────────────────┘
-                           │
-                           │ Returns: ["DEVELOPER", "ARCHITECT", "ADMIN"]
-                           ▼
-┌─────────────────────────────────────────────────────────────┐
-│                    JWT Token                                 │
-│  {                                                           │
-│    "sub": "alan.turing",                                 │
-│    "external_roles": ["DEVELOPER", "ARCHITECT", "ADMIN"],    │
-│    ...                                                       │
-│  }                                                           │
-└─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                                                                             │
+│  ┌─────────────────┐         SAML2          ┌─────────────────┐            │
+│  │                 │       Assertion        │                 │            │
+│  │  Keycloak IdP   │ ──────────────────────▶│  Keycloak SP    │            │
+│  │  (puerto 8180)  │                        │  (puerto 8080)  │            │
+│  │                 │                        │                 │            │
+│  │  Usuarios:      │                        │  Sin usuarios   │            │
+│  │  - alan.turing  │                        │  locales        │            │
+│  │  - test.user    │                        │                 │            │
+│  └────────┬────────┘                        └────────┬────────┘            │
+│           │                                          │                      │
+│           │                                          │ JDBC                 │
+│           ▼                                          ▼                      │
+│  ┌─────────────────┐                        ┌─────────────────┐            │
+│  │ keycloak-idp-db │                        │    roles-db     │            │
+│  │   (PostgreSQL)  │                        │  (PostgreSQL)   │            │
+│  └─────────────────┘                        │                 │            │
+│                                             │  user_roles:    │            │
+│                                             │  alan.turing →  │            │
+│                                             │    DEVELOPER    │            │
+│                                             │    ARCHITECT    │            │
+│                                             │    ADMIN        │            │
+│                                             └─────────────────┘            │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Components
-
-1. **keycloak-roles-mapper** (Maven module)
-   - `ExternalRolesProtocolMapper`: Keycloak SPI implementation
-   - `RoleRepository`: JDBC access layer with HikariCP
-   - SPI descriptor: Registers the mapper with Keycloak
-
-2. **roles-db** (PostgreSQL container)
-   - Stores user-role mappings
-   - Initialized with test data via `init-db/01-schema.sql`
-
-3. **keycloak-db** (PostgreSQL container)
-   - Keycloak's internal database (realms, users, clients, etc.)
-
-4. **keycloak** (Custom Docker image)
-   - Based on `quay.io/keycloak/keycloak:23.0.7`
-   - Includes the custom mapper JAR in `/opt/keycloak/providers/`
-
----
-
-## 📁 Project Structure
+## Flujo de Autenticación
 
 ```
-keycloak-experiment/
-├── pom.xml                              # Parent POM (multi-module)
-├── build.sh / build.bat                 # Build scripts (Linux/Windows)
-├── docker-compose.yml                   # Orchestrates 3 containers
-│
-├── keycloak-roles-mapper/               # Maven module: Custom mapper
-│   ├── pom.xml                          # Dependencies: Keycloak SPI, PostgreSQL, HikariCP
-│   └── src/main/
-│       ├── java/com/example/keycloak/mapper/
-│       │   ├── ExternalRolesProtocolMapper.java    # Main mapper logic
-│       │   └── RoleRepository.java                 # Database access
-│       └── resources/META-INF/services/
-│           └── org.keycloak.protocol.ProtocolMapper  # SPI registration
-│
-├── spring-client/                       # Maven module: Optional test client
-│   ├── pom.xml
-│   └── src/main/java/com/example/
-│       └── KeycloakExperimentApplication.java
-│
-├── docker/
-│   └── keycloak/
-│       ├── Dockerfile                   # Keycloak + custom provider
-│       └── keycloak-roles-mapper.jar    # Copied here by build script
-│
-└── init-db/
-    └── 01-schema.sql                    # PostgreSQL schema + test data
+1. Usuario accede a app protegida por Keycloak SP
+2. SP no tiene sesión → muestra login con botón "forti-simulator"
+3. Click → redirección a Keycloak IdP (8180)
+4. Usuario introduce credenciales en IdP
+5. IdP genera SAML assertion con username
+6. Redirección de vuelta a SP con la assertion
+7. SP valida assertion y crea usuario federado
+8. Custom Protocol Mapper consulta PostgreSQL
+9. JWT generado con claim "external_roles"
 ```
 
----
+## Quick Start
 
-## 🔧 Prerequisites
-
-- **Java 17** or higher
-- **Maven 3.8+** (or use included Maven wrapper: `./mvnw`)
-- **Docker** and **Docker Compose**
-- **curl** (for testing) or **Postman**
-- **Optional**: Database client (DBeaver, pgAdmin) for inspecting databases
-
----
-
-## 🚀 Quick Start
-
-### 1. Build the Project
-
-#### On Linux/Mac:
-```bash
-chmod +x build.sh
-./build.sh start
-```
-
-#### On Windows:
-```cmd
-build.bat start
-```
-
-This will:
-1. Compile the custom mapper JAR
-2. Copy it to the Docker context
-3. Build the Keycloak Docker image with the provider
-4. Start all containers (roles-db, keycloak-db, keycloak)
-
-### 2. Wait for Keycloak to Start
-
-Monitor the logs:
-```bash
-docker-compose logs -f keycloak
-```
-
-Wait for:
-```
-Keycloak 23.0.7 started
-Listening on: http://0.0.0.0:8080
-```
-
-### 3. Access Keycloak Admin Console
-
-Open: **http://localhost:8080**
-
-Login:
-- **Username**: `admin`
-- **Password**: `admin`
-
----
-
-## ⚙️ Keycloak Configuration
-
-### Step 1: Create Realm
-
-1. In Admin Console, hover over "Master" (top-left) → **Create Realm**
-2. **Realm name**: `example-poc`
-3. Click **Create**
-
-### Step 2: Create Client
-
-1. Navigate to **Clients** → **Create client**
-2. **Client ID**: `spring-client`
-3. **Client type**: `OpenID Connect`
-4. Click **Next**
-5. **Client authentication**: `ON` (confidential)
-6. **Authorization**: `OFF`
-7. **Authentication flow**: Enable:
-   - ✅ Standard flow
-   - ✅ Direct access grants (for testing with password grant)
-8. Click **Save**
-
-### Step 3: Note Client Secret
-
-1. Go to **Clients** → `spring-client` → **Credentials** tab
-2. Copy the **Client secret** (you'll need this for testing)
-
-### Step 4: Create User
-
-1. Navigate to **Users** → **Add user**
-2. **Username**: `alan.turing`
-3. **Email**: `alan.turing@example.com` (optional)
-4. **Email verified**: `ON`
-5. Click **Create**
-6. Go to **Credentials** tab
-7. Click **Set password**
-8. **Password**: `test123`
-9. **Temporary**: `OFF`
-10. Click **Save**
-
-### Step 5: Add Custom Protocol Mapper
-
-1. Go to **Clients** → `spring-client` → **Client scopes** tab
-2. Click on `spring-client-dedicated` (the dedicated scope)
-3. Click **Add mapper** → **By configuration**
-4. Select **External Database Roles Mapper** (this is your custom mapper!)
-5. Configuration (default values are fine):
-   - **Name**: `external-roles-mapper`
-   - **Add to ID token**: `ON`
-   - **Add to access token**: `ON`
-   - **Add to userinfo**: `ON`
-6. Click **Save**
-
----
-
-## 🧪 Testing the Implementation
-
-### Method 1: Get Token via curl
+### 1. Build y arranque
 
 ```bash
-curl -X POST "http://localhost:8080/realms/example-poc/protocol/openid-connect/token" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
+# Compilar JAR y arrancar todo
+./build.sh --start
+
+# O paso a paso:
+cd keycloak-roles-mapper && mvn clean package && cd ..
+docker-compose up -d --build
+```
+
+### 2. Esperar a que los servicios estén healthy
+
+```bash
+docker-compose ps
+docker-compose logs -f
+```
+
+### 3. Configurar Keycloak IdP (puerto 8180)
+
+Acceder a http://localhost:8180 con admin/admin
+
+#### 3.1 Crear Realm
+- Crear nuevo realm: `idp-realm`
+
+#### 3.2 Crear Usuarios
+- Users → Add user
+- Username: `alan.turing`
+- Email: `alan.turing@example.com`
+- First Name: `Alan`
+- Last Name: `Turing`
+- Enabled: ON
+- Credentials → Set password: `test123` (Temporary: OFF)
+
+Repetir para `test.user` con password `test123`
+
+#### 3.3 Crear Client SAML para el SP
+- Clients → Create client
+- Client type: `SAML`
+- Client ID: `http://localhost:8080/realms/sp-realm`
+- Name: `Keycloak SP`
+- Save
+
+Configurar el client:
+- Settings:
+  - Root URL: `http://localhost:8080/realms/sp-realm`
+  - Valid redirect URIs: `http://localhost:8080/realms/sp-realm/broker/forti-simulator/endpoint/*`
+  - Master SAML Processing URL: `http://localhost:8080/realms/sp-realm/broker/forti-simulator/endpoint`
+  - Name ID Format: `username`
+  - Force Name ID Format: ON
+- Keys:
+  - Client signature required: OFF (para simplificar la POC)
+
+#### 3.4 Copiar URL de metadata del IdP
+- Realm Settings → General → Endpoints → SAML 2.0 Identity Provider Metadata
+- Copiar URL: `http://localhost:8180/realms/idp-realm/protocol/saml/descriptor`
+
+### 4. Configurar Keycloak SP (puerto 8080)
+
+Acceder a http://localhost:8080 con admin/admin
+
+#### 4.1 Crear Realm
+- Crear nuevo realm: `sp-realm`
+
+#### 4.2 Configurar Identity Provider SAML
+- Identity Providers → Add provider → SAML v2.0
+- Alias: `forti-simulator`
+- Display name: `Login con FortiAuth (Simulado)`
+- Import from URL: pegar la URL de metadata del IdP
+  - NOTA: Cambiar `localhost` por `keycloak-idp` en la URL para red Docker:
+  - `http://keycloak-idp:8080/realms/idp-realm/protocol/saml/descriptor`
+- Save
+
+Configurar el Identity Provider:
+- Settings:
+  - Service provider entity ID: `http://localhost:8080/realms/sp-realm`
+  - Single Sign-On Service URL: `http://keycloak-idp:8080/realms/idp-realm/protocol/saml`
+  - Principal Type: `Subject NameID`
+  - Principal Attribute: (dejar vacío)
+  - First Login Flow: `first broker login`
+
+#### 4.3 Crear Client para aplicación
+- Clients → Create client
+- Client type: `OpenID Connect`
+- Client ID: `spring-client`
+- Client authentication: ON
+- Authorization: OFF
+- Save
+
+Configurar:
+- Valid redirect URIs: `*`
+- Web origins: `*`
+- Copiar el Client Secret de la pestaña Credentials
+
+#### 4.4 Añadir Protocol Mapper custom
+- Clients → spring-client → Client scopes → spring-client-dedicated
+- Add mapper → By configuration → External Database Roles Mapper
+- Name: `external-roles-mapper`
+- Token Claim Name: `external_roles`
+- Add to ID token: ON
+- Add to access token: ON
+- Add to userinfo: ON
+- Save
+
+### 5. Probar el flujo SAML
+
+#### Opción A: Navegador (Authorization Code Flow)
+
+1. Abrir en navegador:
+```
+http://localhost:8080/realms/sp-realm/protocol/openid-connect/auth?client_id=spring-client&response_type=code&redirect_uri=http://localhost:8080/&scope=openid
+```
+
+2. Click en "forti-simulator"
+3. Introducir credenciales en IdP (alan.turing / test123)
+4. Serás redirigido con un code en la URL
+5. Intercambiar code por token:
+
+```bash
+CODE="<el_code_de_la_url>"
+CLIENT_SECRET="<tu_client_secret>"
+
+curl -X POST http://localhost:8080/realms/sp-realm/protocol/openid-connect/token \
   -d "client_id=spring-client" \
-  -d "client_secret=YOUR_CLIENT_SECRET_HERE" \
-  -d "username=alan.turing" \
-  -d "password=test123" \
-  -d "grant_type=password"
+  -d "client_secret=$CLIENT_SECRET" \
+  -d "grant_type=authorization_code" \
+  -d "code=$CODE" \
+  -d "redirect_uri=http://localhost:8080/"
 ```
 
-**Replace** `YOUR_CLIENT_SECRET_HERE` with the secret from Step 3 above.
+#### Opción B: Direct Grant (solo testing)
 
-### Method 2: Get Token via Postman
+Esto NO funcionará hasta que el usuario haya iniciado sesión al menos una vez via SAML (para crear el usuario federado en el SP).
 
-1. **POST** `http://localhost:8080/realms/example-poc/protocol/openid-connect/token`
-2. **Body**: `x-www-form-urlencoded`
-   - `client_id`: `spring-client`
-   - `client_secret`: `<YOUR_SECRET>`
-   - `username`: `alan.turing`
-   - `password`: `test123`
-   - `grant_type`: `password`
-3. Send request
+### 6. Verificar resultado
 
-### Method 3: Decode and Verify JWT
+Decodificar el access_token en https://jwt.io
 
-1. Copy the `access_token` from the response
-2. Go to **https://jwt.io**
-3. Paste the token
-4. Verify the payload contains:
-
+Debe contener:
 ```json
 {
-  "exp": 1234567890,
-  "iat": 1234567890,
-  "sub": "abc123-def456...",
+  "external_roles": ["ADMIN", "ARCHITECT", "DEVELOPER"],
   "preferred_username": "alan.turing",
-  "external_roles": [
-    "ADMIN",
-    "ARCHITECT",
-    "DEVELOPER"
-  ]
+  ...
 }
 ```
 
-✅ **Success!** The `external_roles` claim proves the mapper is working.
+## Verificar usuario federado
 
----
+En Keycloak SP Admin Console:
+- Users → View all users
+- Debe aparecer `alan.turing` con:
+  - Federation link: `forti-simulator`
+  - Sin password local
 
-## 🔍 Troubleshooting
+## Troubleshooting
 
-### Issue: Mapper doesn't appear in Keycloak Admin Console
-
-**Symptoms**: "External Database Roles Mapper" not listed when adding mapper.
-
-**Solutions**:
-1. Check JAR was built and copied:
-   ```bash
-   ls -lh docker/keycloak/keycloak-roles-mapper.jar
-   ```
-2. Rebuild Keycloak image:
-   ```bash
-   docker-compose down
-   ./build.sh docker
-   docker-compose up -d
-   ```
-3. Check Keycloak logs for provider registration:
-   ```bash
-   docker-compose logs keycloak | grep -i "external.*role"
-   ```
-
-### Issue: JWT doesn't contain `external_roles` claim
-
-**Symptoms**: Token is valid but missing the custom claim.
-
-**Solutions**:
-1. Verify mapper is configured in client scope:
-   - Clients → spring-client → Client scopes → spring-client-dedicated
-   - Should see "external-roles-mapper" in the list
-2. Check mapper is enabled for access token:
-   - Edit mapper → "Add to access token" = ON
-3. Check database connectivity:
-   ```bash
-   docker-compose logs keycloak | grep -i "hikaricp"
-   docker-compose logs keycloak | grep -i "roles"
-   ```
-
-### Issue: Empty `external_roles` array
-
-**Symptoms**: Claim exists but `external_roles: []`
-
-**Possible causes**:
-1. Username doesn't exist in roles database:
-   ```bash
-   docker-compose exec roles-db psql -U keycloak -d roles -c "SELECT * FROM user_roles WHERE username = 'alan.turing';"
-   ```
-2. Database connection error (check logs)
-3. Username case mismatch (PostgreSQL is case-sensitive)
-
-### Issue: Database connection timeout
-
-**Symptoms**: Logs show "Connection timeout" or "SQLException"
-
-**Solutions**:
-1. Verify roles-db is healthy:
-   ```bash
-   docker-compose ps
-   docker-compose logs roles-db
-   ```
-2. Check environment variables:
-   ```bash
-   docker-compose exec keycloak env | grep ROLES_DB
-   ```
-3. Test database connectivity from Keycloak container:
-   ```bash
-   docker-compose exec keycloak bash
-   apt update && apt install -y postgresql-client
-   psql -h roles-db -U keycloak -d roles -c "SELECT 1"
-   ```
-
-### Issue: Build fails with Maven errors
-
-**Symptoms**: `mvn package` fails
-
-**Solutions**:
-1. Ensure Java 17+ is installed:
-   ```bash
-   java -version
-   ```
-2. Use Maven wrapper:
-   ```bash
-   cd keycloak-roles-mapper
-   ./mvnw clean package -U  # -U forces dependency update
-   ```
-3. Clear Maven cache:
-   ```bash
-   rm -rf ~/.m2/repository
-   ./mvnw clean install
-   ```
-
----
-
-## 🔧 Advanced Configuration
-
-### Environment Variables for Roles Database
-
-You can customize the database connection in `docker-compose.yml`:
-
-```yaml
-environment:
-  ROLES_DB_URL: jdbc:postgresql://roles-db:5432/roles
-  ROLES_DB_USER: keycloak
-  ROLES_DB_PASSWORD: keycloak
-  ROLES_DB_POOL_SIZE: 10           # HikariCP max pool size
-  ROLES_DB_MIN_IDLE: 2             # HikariCP min idle connections
-  ROLES_DB_CONN_TIMEOUT: 30000     # Connection timeout (ms)
-  ROLES_DB_IDLE_TIMEOUT: 600000    # Idle timeout (ms)
-  ROLES_DB_MAX_LIFETIME: 1800000   # Max connection lifetime (ms)
-```
-
-### Custom Logging
-
-Enable debug logging for the mapper:
-
-```yaml
-environment:
-  QUARKUS_LOG_CATEGORY__COM_EXAMPLE_KEYCLOAK__LEVEL: debug
-```
-
-View detailed logs:
+### Ver logs de ambos Keycloaks
 ```bash
-docker-compose logs -f keycloak | grep "com.example.keycloak"
+docker-compose logs -f keycloak-idp keycloak-sp
 ```
 
-### Persistent vs Ephemeral Data
-
-**Current setup**: Persistent (data survives `docker-compose down`)
-
-**To make ephemeral** (useful for testing):
-```yaml
-volumes:
-  roles-db-data:
-    # Comment out or remove this volume
-```
-
-Then restart:
+### Verificar datos en roles-db
 ```bash
-docker-compose down -v  # -v removes volumes
-docker-compose up -d
+docker-compose exec roles-db psql -U keycloak -d roles -c "SELECT * FROM user_roles;"
 ```
 
----
+### El mapper no encuentra roles
+- Verificar que el username en SAML assertion coincide exactamente con user_roles.username
+- Revisar logs del SP: `docker-compose logs keycloak-sp | grep -i external`
 
-## 🎯 Next Steps
+### Error de conexión SAML entre IdP y SP
+- Los contenedores se comunican por nombre de servicio (`keycloak-idp`, `keycloak-sp`)
+- Las URLs de metadata/endpoints deben usar estos nombres internos
+- Las URLs del navegador usan `localhost:8180` y `localhost:8080`
 
-### Immediate Enhancements (within POC-04-A)
+## Servicios y Puertos
 
-1. **Add more test users**:
-   - Edit `init-db/01-schema.sql`
-   - Add INSERT statements
-   - Rebuild: `docker-compose down -v && ./build.sh start`
+| Servicio | Puerto | Descripción |
+|----------|--------|-------------|
+| keycloak-idp | 8180 | Identity Provider (usuarios nativos) |
+| keycloak-sp | 8080 | Service Provider (usuarios federados + JAR) |
+| roles-db | 5433 | PostgreSQL con roles externos |
+| keycloak-idp-db | 5434 | PostgreSQL para Keycloak IdP |
+| keycloak-sp-db | 5432 | PostgreSQL para Keycloak SP |
 
-2. **Implement JWT validation in Spring Client**:
-   - Add Spring Security + OAuth2 Resource Server
-   - Validate JWT signature
-   - Extract and use `external_roles` for authorization
+## Limpieza
 
-3. **Add health check endpoint**:
-   - Verify database connectivity from mapper
-   - Expose via custom REST endpoint in Keycloak
+```bash
+# Parar todo y eliminar volúmenes
+docker-compose down -v
 
-### POC-04-B: User Storage SPI
-
-Evolve to full User Storage SPI implementation:
-- Roles visible in Keycloak Admin Console
-- Support for role assignments via Admin UI
-- Integration with Keycloak's role model
-- Caching and performance optimization
-
-### Production Considerations
-
-Before deploying to production:
-
-1. **Security**:
-   - Use secrets management (Vault, AWS Secrets Manager)
-   - Enable HTTPS/TLS for Keycloak
-   - Implement read-only database user for mapper
-   - Enable PostgreSQL SSL connections
-
-2. **Observability**:
-   - Export metrics via Keycloak's Metrics endpoint
-   - Integrate with Prometheus + Grafana
-   - Set up alerts for database connectivity issues
-
-3. **High Availability**:
-   - Cluster Keycloak (multiple instances)
-   - Use managed PostgreSQL (AWS RDS, GCP Cloud SQL)
-   - Implement database read replicas
-
-4. **Testing**:
-   - Write integration tests for mapper
-   - Load testing with JMeter/Gatling
-   - Chaos engineering (database failover scenarios)
-
----
-
-## 📚 Resources
-
-- [Keycloak Documentation](https://www.keycloak.org/docs/latest/)
-- [Keycloak SPI Development Guide](https://www.keycloak.org/docs/latest/server_development/)
-- [HikariCP GitHub](https://github.com/brettwooldridge/HikariCP)
-- [JWT.io Debugger](https://jwt.io/)
-
----
-
-## 📝 License
-
-This is a proof-of-concept project for learning purposes. Use at your own risk.
-
----
-
-## 🤝 Contributing
-
-Improvements and suggestions welcome! This is a learning project, so feel free to experiment.
-
----
-
-**Built with ❤️ for understanding Keycloak's extensibility**
+# O usar el script
+./build.sh --clean
+```
