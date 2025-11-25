@@ -387,26 +387,6 @@ curl -X POST "http://localhost:8080/realms/example-poc/protocol/openid-connect/t
    psql -h roles-db -U keycloak -d roles -c "SELECT 1"
    ```
 
-### Issue: Build fails with Maven errors
-
-**Symptoms**: `mvn package` fails
-
-**Solutions**:
-1. Ensure Java 17+ is installed:
-   ```bash
-   java -version
-   ```
-2. Use Maven wrapper:
-   ```bash
-   cd keycloak-roles-mapper
-   ./mvnw clean package -U  # -U forces dependency update
-   ```
-3. Clear Maven cache:
-   ```bash
-   rm -rf ~/.m2/repository
-   ./mvnw clean install
-   ```
-
 ---
 
 ## 🔧 Advanced Configuration
@@ -486,31 +466,6 @@ Evolve to full User Storage SPI implementation:
 - Integration with Keycloak's role model
 - Caching and performance optimization
 
-### Production Considerations
-
-Before deploying to production:
-
-1. **Security**:
-   - Use secrets management (Vault, AWS Secrets Manager)
-   - Enable HTTPS/TLS for Keycloak
-   - Implement read-only database user for mapper
-   - Enable PostgreSQL SSL connections
-
-2. **Observability**:
-   - Export metrics via Keycloak's Metrics endpoint
-   - Integrate with Prometheus + Grafana
-   - Set up alerts for database connectivity issues
-
-3. **High Availability**:
-   - Cluster Keycloak (multiple instances)
-   - Use managed PostgreSQL (AWS RDS, GCP Cloud SQL)
-   - Implement database read replicas
-
-4. **Testing**:
-   - Write integration tests for mapper
-   - Load testing with JMeter/Gatling
-   - Chaos engineering (database failover scenarios)
-
 ---
 
 ## 📚 Resources
@@ -519,19 +474,3 @@ Before deploying to production:
 - [Keycloak SPI Development Guide](https://www.keycloak.org/docs/latest/server_development/)
 - [HikariCP GitHub](https://github.com/brettwooldridge/HikariCP)
 - [JWT.io Debugger](https://jwt.io/)
-
----
-
-## 📝 License
-
-This is a proof-of-concept project for learning purposes. Use at your own risk.
-
----
-
-## 🤝 Contributing
-
-Improvements and suggestions welcome! This is a learning project, so feel free to experiment.
-
----
-
-**Built with ❤️ for understanding Keycloak's extensibility**
