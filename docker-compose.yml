@@ -1,0 +1,197 @@
+version: '3.8'
+
+# ============================================================================
+# POC-04-A: Keycloak with External Roles Provider
+# ============================================================================
+# Services:
+# 1. roles-db: PostgreSQL for external user roles
+# 2. keycloak-db: PostgreSQL for Keycloak's internal data
+# 3. keycloak: Keycloak with custom protocol mapper
+# ============================================================================
+
+services:
+  # ==========================================================================
+  # External Roles Database
+  # ==========================================================================
+  roles-db:
+    image: postgres:16-alpine
+    container_name: poc04-roles-db
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_DB: roles
+      POSTGRES_USER: keycloak
+      POSTGRES_PASSWORD: keycloak
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+
+    volumes:
+      # Initialize database schema and test data
+      - ./init-db:/docker-entrypoint-initdb.d:ro
+      # Persist data (optional - comment out for ephemeral testing)
+      - roles-db-data:/var/lib/postgresql/data
+
+    ports:
+      - "5433:5432"  # Exposed for external access (e.g., DBeaver)
+
+    networks:
+      - keycloak-network
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U keycloak -d roles"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ==========================================================================
+  # Keycloak Internal Database
+  # ==========================================================================
+  keycloak-db:
+    image: postgres:16-alpine
+    container_name: poc04-keycloak-db
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_DB: keycloak
+      POSTGRES_USER: keycloak
+      POSTGRES_PASSWORD: keycloak
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+
+    volumes:
+      # Persist Keycloak data (realms, users, clients, etc.)
+      - keycloak-db-data:/var/lib/postgresql/data
+
+    ports:
+      - "5432:5432"  # Exposed for troubleshooting
+
+    networks:
+      - keycloak-network
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U keycloak -d keycloak"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ==========================================================================
+  # Keycloak with Custom Provider
+  # ==========================================================================
+  keycloak:
+    build:
+      context: .
+      dockerfile: docker/keycloak/Dockerfile
+    container_name: poc04-keycloak
+    restart: unless-stopped
+
+    depends_on:
+      keycloak-db:
+        condition: service_healthy
+      roles-db:
+        condition: service_healthy
+
+    environment:
+      # Keycloak database configuration
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://keycloak-db:5432/keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: keycloak
+
+      # Keycloak admin credentials
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+
+      # External roles database configuration
+      ROLES_DB_URL: jdbc:postgresql://roles-db:5432/roles
+      ROLES_DB_USER: keycloak
+      ROLES_DB_PASSWORD: keycloak
+      ROLES_DB_POOL_SIZE: 10
+      ROLES_DB_MIN_IDLE: 2
+      ROLES_DB_CONN_TIMEOUT: 30000
+      ROLES_DB_IDLE_TIMEOUT: 600000
+      ROLES_DB_MAX_LIFETIME: 1800000
+
+      # Keycloak runtime settings
+      KC_HTTP_ENABLED: "true"
+      KC_HOSTNAME_STRICT: "false"
+      KC_PROXY: edge
+      KC_HEALTH_ENABLED: "true"
+      KC_METRICS_ENABLED: "true"
+
+      # Logging
+      KC_LOG_LEVEL: info
+      QUARKUS_LOG_CATEGORY__COM_EXAMPLE_KEYCLOAK__LEVEL: debug
+
+    ports:
+      - "8080:8080"  # HTTP
+      - "8443:8443"  # HTTPS (if configured)
+
+    networks:
+      - keycloak-network
+
+    command:
+      - start
+      - --optimized
+      - --http-enabled=true
+      - --hostname-strict=false
+
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health/ready || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 10
+      start_period: 90s
+
+# ============================================================================
+# Networks
+# ============================================================================
+networks:
+  keycloak-network:
+    name: poc04-network
+    driver: bridge
+
+# ============================================================================
+# Volumes
+# ============================================================================
+volumes:
+  roles-db-data:
+    name: poc04-roles-db-data
+  keycloak-db-data:
+    name: poc04-keycloak-db-data
+
+# ============================================================================
+# Usage Instructions
+# ============================================================================
+# 1. Build the mapper JAR:
+#    ./build.sh (or manually: cd keycloak-roles-mapper && mvn clean package)
+#
+# 2. Start the stack:
+#    docker-compose up -d
+#
+# 3. Wait for Keycloak to be healthy:
+#    docker-compose logs -f keycloak
+#
+# 4. Access Keycloak Admin Console:
+#    http://localhost:8080
+#    Username: admin
+#    Password: admin
+#
+# 5. Configure (see README.md):
+#    - Create realm: example-poc
+#    - Create client: spring-client
+#    - Create user: alan.turing
+#    - Add External Database Roles Mapper to client
+#
+# 6. Test token:
+#    curl -X POST http://localhost:8080/realms/example-poc/protocol/openid-connect/token \
+#      -d "client_id=spring-client" \
+#      -d "client_secret=<YOUR_CLIENT_SECRET>" \
+#      -d "username=alan.turing" \
+#      -d "password=test123" \
+#      -d "grant_type=password"
+#
+# 7. Decode JWT at https://jwt.io to verify "external_roles" claim
+#
+# 8. Cleanup:
+#    docker-compose down -v  # -v removes volumes (data will be lost)
+# ============================================================================
