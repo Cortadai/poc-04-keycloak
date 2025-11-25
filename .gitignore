@@ -1,0 +1,94 @@
+# ============================================================================
+# Git Ignore for POC-04-A: Keycloak Experiment
+# ============================================================================
+
+# Maven
+target/
+pom.xml.tag
+pom.xml.releaseBackup
+pom.xml.versionsBackup
+pom.xml.next
+release.properties
+dependency-reduced-pom.xml
+buildNumber.properties
+.mvn/timing.properties
+.mvn/wrapper/maven-wrapper.jar
+!**/src/main/**/target/
+!**/src/test/**/target/
+
+# Eclipse / STS
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings/
+.springBeans
+.sts4-cache
+
+# IntelliJ IDEA
+.idea/
+*.iml
+*.iws
+*.ipr
+out/
+
+# VS Code
+.vscode/
+*.code-workspace
+
+# NetBeans
+/nbproject/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
+build/
+!**/src/main/**/build/
+!**/src/test/**/build/
+
+# Compiled class files
+*.class
+
+# Log files
+*.log
+logs/
+
+# Package files - EXCEPT the one we need for Docker
+*.jar
+*.war
+*.nar
+*.ear
+*.zip
+*.tar.gz
+*.rar
+
+# Keycloak provider JAR in docker context (will be copied by build script)
+docker/keycloak/keycloak-roles-mapper.jar
+
+# OS specific
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# Temporary files
+*.tmp
+*.bak
+*.cache
+
+# Environment files with secrets
+.env
+.env.local
+*.secret
+
+# Test outputs
+test-output/
+coverage/
+
+# Documentation
+HELP.md
+
+# Serena and Claude context
+.serena/
+.claude/
