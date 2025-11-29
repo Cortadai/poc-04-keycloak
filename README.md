@@ -1,4 +1,4 @@
-# POC-04-B: Keycloak SAML2 Federation with External Roles
+# POC-04-B: Keycloak SAML2 Federation + External Roles
 
 Proof of Concept que demuestra:
 1. **Federación SAML2**: Keycloak SP recibe usuarios desde Keycloak IdP via SAML
@@ -7,187 +7,201 @@ Proof of Concept que demuestra:
 ## Arquitectura
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                                                                             │
-│  ┌─────────────────┐         SAML2          ┌─────────────────┐            │
-│  │                 │       Assertion        │                 │            │
-│  │  Keycloak IdP   │ ──────────────────────▶│  Keycloak SP    │            │
-│  │  (puerto 8180)  │                        │  (puerto 8080)  │            │
-│  │                 │                        │                 │            │
-│  │  Usuarios:      │                        │  Sin usuarios   │            │
-│  │  - alan.turing  │                        │  locales        │            │
-│  │  - test.user    │                        │                 │            │
-│  └────────┬────────┘                        └────────┬────────┘            │
-│           │                                          │                      │
-│           │                                          │ JDBC                 │
-│           ▼                                          ▼                      │
-│  ┌─────────────────┐                        ┌─────────────────┐            │
-│  │ keycloak-idp-db │                        │    roles-db     │            │
-│  │   (PostgreSQL)  │                        │  (PostgreSQL)   │            │
-│  └─────────────────┘                        │                 │            │
-│                                             │  user_roles:    │            │
-│                                             │  alan.turing →  │            │
-│                                             │    DEVELOPER    │            │
-│                                             │    ARCHITECT    │            │
-│                                             │    ADMIN        │            │
-│                                             └─────────────────┘            │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│                                                                         │
+│  ┌─────────────────┐       SAML2        ┌─────────────────┐            │
+│  │  Keycloak IdP   │  ───────────────►  │  Keycloak SP    │            │
+│  │  (puerto 8180)  │     Assertion      │  (puerto 8080)  │            │
+│  │                 │                    │                 │            │
+│  │  Usuarios:      │                    │  + JAR Custom   │            │
+│  │  - alan.turing  │                    │                 │            │
+│  │  - test.user    │                    └────────┬────────┘            │
+│  └────────┬────────┘                             │                     │
+│           │                                      │ JDBC                │
+│           ▼                                      ▼                     │
+│  ┌─────────────────┐                    ┌─────────────────┐            │
+│  │ keycloak-idp-db │                    │    roles-db     │            │
+│  │   (PostgreSQL)  │                    │  (PostgreSQL)   │            │
+│  │   Puerto: 5434  │                    │  Puerto: 5433   │            │
+│  └─────────────────┘                    │                 │            │
+│                                         │  alan.turing:   │            │
+│                                         │  - ADMIN        │            │
+│                                         │  - ARCHITECT    │            │
+│                                         │  - DEVELOPER    │            │
+│                                         └─────────────────┘            │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
-## Flujo de Autenticación
+## Servicios y Puertos
 
-```
-1. Usuario accede a app protegida por Keycloak SP
-2. SP no tiene sesión → muestra login con botón "forti-simulator"
-3. Click → redirección a Keycloak IdP (8180)
-4. Usuario introduce credenciales en IdP
-5. IdP genera SAML assertion con username
-6. Redirección de vuelta a SP con la assertion
-7. SP valida assertion y crea usuario federado
-8. Custom Protocol Mapper consulta PostgreSQL
-9. JWT generado con claim "external_roles"
-```
+| Servicio | Puerto | Descripción |
+|----------|--------|-------------|
+| keycloak-idp | 8180 | Identity Provider (usuarios nativos) |
+| keycloak-sp | 8080 | Service Provider (usuarios federados + JAR custom) |
+| keycloak-idp-db | 5434 | PostgreSQL para Keycloak IdP |
+| keycloak-sp-db | 5432 | PostgreSQL para Keycloak SP |
+| roles-db | 5433 | PostgreSQL con roles externos |
 
 ## Quick Start
 
 ### 1. Build y arranque
 
 ```bash
-# Compilar JAR y arrancar todo
 ./build.sh --start
+```
 
-# O paso a paso:
+O manualmente:
+```bash
 cd keycloak-roles-mapper && mvn clean package && cd ..
 docker-compose up -d --build
 ```
 
-### 2. Esperar a que los servicios estén healthy
+### 2. Esperar a que los servicios estén healthy (~2 min)
 
 ```bash
 docker-compose ps
-docker-compose logs -f
 ```
 
-### 3. Configurar Keycloak IdP (puerto 8180)
+Todos los contenedores deben mostrar "healthy".
 
-Acceder a http://localhost:8180 con admin/admin
+---
 
-#### 3.1 Crear Realm
-- Crear nuevo realm: `idp-realm`
+## Configuración
 
-#### 3.2 Crear Usuarios
-- Users → Add user
+### Paso 1: Configurar Keycloak IdP (puerto 8180)
+
+Acceder a http://localhost:8180 con `admin/admin`
+
+#### 1.1 Crear Realm
+- Click en el dropdown "master" → **Create realm**
+- Realm name: `idp-realm`
+- Click **Create**
+
+#### 1.2 Crear Usuarios
+- **Users** → **Add user**
 - Username: `alan.turing`
 - Email: `alan.turing@example.com`
 - First Name: `Alan`
 - Last Name: `Turing`
-- Enabled: ON
-- Credentials → Set password: `test123` (Temporary: OFF)
+- **Email verified**: ON
+- Click **Create**
+- Pestaña **Credentials** → **Set password**
+  - Password: `test123`
+  - Temporary: **OFF**
+  - Click **Save**
 
-Repetir para `test.user` con password `test123`
+(Opcional: repetir para `test.user`)
 
-#### 3.3 Crear Client SAML para el SP
-- Clients → Create client
+#### 1.3 Crear Client SAML para el SP
+- **Clients** → **Create client**
 - Client type: `SAML`
 - Client ID: `http://localhost:8080/realms/sp-realm`
-- Name: `Keycloak SP`
-- Save
+- Click **Next** → **Save**
 
 Configurar el client:
-- Settings:
+- **Settings**:
   - Root URL: `http://localhost:8080/realms/sp-realm`
   - Valid redirect URIs: `http://localhost:8080/realms/sp-realm/broker/forti-simulator/endpoint/*`
-  - Master SAML Processing URL: `http://localhost:8080/realms/sp-realm/broker/forti-simulator/endpoint`
   - Name ID Format: `username`
-  - Force Name ID Format: ON
-- Keys:
-  - Client signature required: OFF (para simplificar la POC)
+  - Force Name ID Format: **ON**
+- **Keys**:
+  - Client signature required: **OFF**
+- Click **Save**
 
-#### 3.4 Copiar URL de metadata del IdP
-- Realm Settings → General → Endpoints → SAML 2.0 Identity Provider Metadata
-- Copiar URL: `http://localhost:8180/realms/idp-realm/protocol/saml/descriptor`
+---
 
-### 4. Configurar Keycloak SP (puerto 8080)
+### Paso 2: Configurar Keycloak SP (puerto 8080)
 
-Acceder a http://localhost:8080 con admin/admin
+Acceder a http://localhost:8080 con `admin/admin`
 
-#### 4.1 Crear Realm
-- Crear nuevo realm: `sp-realm`
+#### 2.1 Crear Realm
+- Click en el dropdown "master" → **Create realm**
+- Realm name: `sp-realm`
+- Click **Create**
 
-#### 4.2 Configurar Identity Provider SAML
-- Identity Providers → Add provider → SAML v2.0
+#### 2.2 Configurar Identity Provider SAML
+- **Identity Providers** → **Add provider** → **SAML v2.0**
 - Alias: `forti-simulator`
 - Display name: `Login con FortiAuth (Simulado)`
-- Import from URL: pegar la URL de metadata del IdP
-  - NOTA: Cambiar `localhost` por `keycloak-idp` en la URL para red Docker:
-  - `http://keycloak-idp:8080/realms/idp-realm/protocol/saml/descriptor`
-- Save
+- **SAML entity descriptor**: `http://keycloak-idp:8080/realms/idp-realm/protocol/saml/descriptor`
+  - (Esperar a que aparezca el check verde)
 
-Configurar el Identity Provider:
-- Settings:
-  - Service provider entity ID: `http://localhost:8080/realms/sp-realm`
-  - Single Sign-On Service URL: `http://keycloak-idp:8080/realms/idp-realm/protocol/saml`
-  - Principal Type: `Subject NameID`
-  - Principal Attribute: (dejar vacío)
-  - First Login Flow: `first broker login`
+Verificar que las URLs importadas muestren `localhost:8180` (NO `keycloak-idp:8080`):
+- Identity provider entity ID: `http://localhost:8180/realms/idp-realm`
+- Single Sign-On service URL: `http://localhost:8180/realms/idp-realm/protocol/saml`
 
-#### 4.3 Crear Client para aplicación
-- Clients → Create client
+Configurar opciones de firma:
+- **Want AuthnRequests signed**: **OFF**
+- **Validate Signatures**: **OFF**
+
+Click **Add**
+
+#### 2.3 Crear Client OpenID Connect
+- **Clients** → **Create client**
 - Client type: `OpenID Connect`
 - Client ID: `spring-client`
-- Client authentication: ON
-- Authorization: OFF
-- Save
-
-Configurar:
+- Click **Next**
+- Client authentication: **ON**
+- Click **Next**
 - Valid redirect URIs: `*`
 - Web origins: `*`
-- Copiar el Client Secret de la pestaña Credentials
+- Click **Save**
 
-#### 4.4 Añadir Protocol Mapper custom
-- Clients → spring-client → Client scopes → spring-client-dedicated
-- Add mapper → By configuration → External Database Roles Mapper
+**Copiar el Client Secret**:
+- Pestaña **Credentials** → Copiar el **Client secret** (lo necesitarás para probar)
+
+#### 2.4 Añadir Protocol Mapper Custom
+- **Clients** → **spring-client** → Pestaña **Client scopes**
+- Click en **spring-client-dedicated**
+- **Add mapper** → **By configuration** → **External Database Roles Mapper**
 - Name: `external-roles-mapper`
 - Token Claim Name: `external_roles`
-- Add to ID token: ON
-- Add to access token: ON
-- Add to userinfo: ON
-- Save
+- Add to ID token: **ON**
+- Add to access token: **ON**
+- Add to userinfo: **ON**
+- Click **Save**
 
-### 5. Probar el flujo SAML
+---
 
-#### Opción A: Navegador (Authorization Code Flow)
+## Probar el Flujo
 
-1. Abrir en navegador:
+### Opción A: Test Manual (Navegador)
+
+#### 1. Iniciar el flujo de autenticación
+
+Abrir en el navegador:
 ```
 http://localhost:8080/realms/sp-realm/protocol/openid-connect/auth?client_id=spring-client&response_type=code&redirect_uri=http://localhost:8080/&scope=openid
 ```
 
-2. Click en "forti-simulator"
-3. Introducir credenciales en IdP (alan.turing / test123)
-4. Serás redirigido con un code en la URL
-5. Intercambiar code por token:
+#### 2. Click en "Login con FortiAuth (Simulado)"
 
+#### 3. Introducir credenciales en el IdP
+- Username: `alan.turing`
+- Password: `test123`
+
+#### 4. Completar "Update Account Information" (primera vez)
+- Rellenar campos requeridos
+- Click **Submit**
+
+#### 5. Copiar el code de la URL
+Serás redirigido a:
+```
+http://localhost:8080/?code=XXXXX...&session_state=...
+```
+
+#### 6. Intercambiar code por token
 ```bash
-CODE="<el_code_de_la_url>"
-CLIENT_SECRET="<tu_client_secret>"
-
-curl -X POST http://localhost:8080/realms/sp-realm/protocol/openid-connect/token \
+curl -X POST "http://localhost:8080/realms/sp-realm/protocol/openid-connect/token" \
   -d "client_id=spring-client" \
-  -d "client_secret=$CLIENT_SECRET" \
+  -d "client_secret=<TU_CLIENT_SECRET>" \
   -d "grant_type=authorization_code" \
-  -d "code=$CODE" \
+  -d "code=<EL_CODE_DE_LA_URL>" \
   -d "redirect_uri=http://localhost:8080/"
 ```
 
-#### Opción B: Direct Grant (solo testing)
-
-Esto NO funcionará hasta que el usuario haya iniciado sesión al menos una vez via SAML (para crear el usuario federado en el SP).
-
-### 6. Verificar resultado
-
-Decodificar el access_token en https://jwt.io
+#### 7. Verificar el token
+Decodificar el `access_token` en https://jwt.io
 
 Debe contener:
 ```json
@@ -198,51 +212,100 @@ Debe contener:
 }
 ```
 
-## Verificar usuario federado
+### Opción B: Test con Script
 
-En Keycloak SP Admin Console:
-- Users → View all users
-- Debe aparecer `alan.turing` con:
-  - Federation link: `forti-simulator`
-  - Sin password local
+```bash
+./test-flow.sh <CLIENT_SECRET>
+```
+
+---
 
 ## Troubleshooting
 
-### Ver logs de ambos Keycloaks
-```bash
-docker-compose logs -f keycloak-idp keycloak-sp
+### Error: "Invalid requester" o "Invalid signature" en IdP
+
+**Causa**: El IdP está verificando firmas del SP.
+
+**Solución**: En el IdP, editar el client SAML → Keys → **Client signature required: OFF**
+
+### Error: "IDENTITY_PROVIDER_RESPONSE_ERROR invalid_signature" en SP
+
+**Causa**: El SP no puede verificar la firma del IdP (certificados no coinciden).
+
+**Solución**: En el SP, editar Identity Provider → **Validate Signatures: OFF**
+
+### Las URLs del metadata muestran "keycloak-idp:8080" en vez de "localhost:8180"
+
+**Causa**: El IdP no tiene configurado el hostname correctamente.
+
+**Solución**: Verificar que docker-compose.yml tiene estas variables en keycloak-idp:
+```yaml
+KC_HOSTNAME: localhost
+KC_HOSTNAME_PORT: "8180"
+KC_HOSTNAME_STRICT_HTTPS: "false"
 ```
 
-### Verificar datos en roles-db
+Luego: `docker-compose up -d --build keycloak-idp`
+
+### El mapper no encuentra roles (external_roles vacío)
+
+Verificar datos en la base de datos:
 ```bash
-docker-compose exec roles-db psql -U keycloak -d roles -c "SELECT * FROM user_roles;"
+docker-compose exec roles-db psql -U keycloak -d roles -c "SELECT * FROM user_roles WHERE username = 'alan.turing';"
 ```
 
-### El mapper no encuentra roles
-- Verificar que el username en SAML assertion coincide exactamente con user_roles.username
-- Revisar logs del SP: `docker-compose logs keycloak-sp | grep -i external`
+### Ver logs
 
-### Error de conexión SAML entre IdP y SP
-- Los contenedores se comunican por nombre de servicio (`keycloak-idp`, `keycloak-sp`)
-- Las URLs de metadata/endpoints deben usar estos nombres internos
-- Las URLs del navegador usan `localhost:8180` y `localhost:8080`
+```bash
+# Logs del IdP
+docker-compose logs -f keycloak-idp
 
-## Servicios y Puertos
+# Logs del SP
+docker-compose logs -f keycloak-sp
 
-| Servicio | Puerto | Descripción |
-|----------|--------|-------------|
-| keycloak-idp | 8180 | Identity Provider (usuarios nativos) |
-| keycloak-sp | 8080 | Service Provider (usuarios federados + JAR) |
-| roles-db | 5433 | PostgreSQL con roles externos |
-| keycloak-idp-db | 5434 | PostgreSQL para Keycloak IdP |
-| keycloak-sp-db | 5432 | PostgreSQL para Keycloak SP |
+# Filtrar errores
+docker-compose logs keycloak-sp 2>&1 | grep -i error
+```
+
+---
+
+## Datos de Prueba
+
+La base de datos `roles-db` viene precargada con:
+
+| Username | Roles |
+|----------|-------|
+| alan.turing | ADMIN, ARCHITECT, DEVELOPER |
+| test.user | DEVELOPER, TESTER |
+| john.doe | VIEWER |
+
+---
 
 ## Limpieza
 
 ```bash
-# Parar todo y eliminar volúmenes
-docker-compose down -v
+# Parar todo
+docker-compose down
 
-# O usar el script
-./build.sh --clean
+# Parar y eliminar volúmenes (reset completo)
+docker-compose down -v
+```
+
+---
+
+## Estructura del Proyecto
+
+```
+keycloak-experiment/
+├── docker-compose.yml          # Definición de servicios
+├── build.sh                    # Script de build
+├── docker/
+│   ├── keycloak-idp/          # Dockerfile IdP (vanilla)
+│   └── keycloak-sp/           # Dockerfile SP (con JAR custom)
+├── keycloak-roles-mapper/     # Código del Protocol Mapper
+│   └── src/main/java/com/example/keycloak/mapper/
+│       ├── ExternalRolesProtocolMapper.java
+│       └── RoleRepository.java
+└── init-db/                   # Scripts inicialización PostgreSQL
+    └── 01-schema.sql
 ```
