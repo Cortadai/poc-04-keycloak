@@ -1,302 +1,302 @@
 # POC-04-A: Keycloak Custom Roles Provider
 
-**Custom Protocol Mapper for Keycloak that fetches user roles from an external PostgreSQL database and injects them into JWT tokens.**
+**Protocol Mapper personalizado para Keycloak que obtiene roles de usuario desde una base de datos PostgreSQL externa y los inyecta en los tokens JWT.**
 
 ---
 
-## 📋 Table of Contents
+## 📋 Tabla de Contenidos
 
-- [Overview](#overview)
-- [Architecture](#architecture)
-- [Project Structure](#project-structure)
-- [Prerequisites](#prerequisites)
-- [Quick Start](#quick-start)
-- [Keycloak Configuration](#keycloak-configuration)
-- [Testing the Implementation](#testing-the-implementation)
-- [Troubleshooting](#troubleshooting)
-- [Advanced Configuration](#advanced-configuration)
-- [Next Steps](#next-steps)
+- [Descripción General](#descripción-general)
+- [Arquitectura](#arquitectura)
+- [Estructura del Proyecto](#estructura-del-proyecto)
+- [Prerrequisitos](#prerrequisitos)
+- [Inicio Rápido](#inicio-rápido)
+- [Configuración de Keycloak](#configuración-de-keycloak)
+- [Probando la Implementación](#probando-la-implementación)
+- [Solución de Problemas](#solución-de-problemas)
+- [Configuración Avanzada](#configuración-avanzada)
+- [Próximos Pasos](#próximos-pasos)
 
 ---
 
-## 🎯 Overview
+## 🎯 Descripción General
 
-### Context and Motivation
+### Contexto y Motivación
 
-This POC replicates the real-world scenario where:
-- Keycloak obtains users from **FortiAuthenticator via SAML2** (which pulls from LDAP)
-- Roles come from an **external database via custom JAR**
+Este POC replica el escenario real donde:
+- Keycloak obtiene usuarios de **FortiAuthenticator vía SAML2** (que a su vez los obtiene de LDAP)
+- Los roles vienen de una **base de datos externa mediante un JAR personalizado**
 
-**Goal**: Gain deep understanding and confidence in this architectural pattern by implementing a simplified version first.
+**Objetivo**: Obtener un conocimiento profundo y confianza en este patrón arquitectónico implementando primero una versión simplificada.
 
-### Design Decision
+### Decisión de Diseño
 
-Split into two progressive POCs instead of tackling everything at once:
+División en dos POCs progresivos en lugar de abordar todo de una vez:
 
-**POC-04-A** (this project):
-- Keycloak with **native users** (no SAML yet)
-- Custom JAR queries roles from **PostgreSQL external database**
-- Simple approach: 1-2 Java classes
-- Objective: Master Keycloak's extension mechanism
+**POC-04-A** (este proyecto):
+- Keycloak con **usuarios nativos** (sin SAML todavía)
+- JAR personalizado que consulta roles desde **base de datos PostgreSQL externa**
+- Enfoque simple: 1-2 clases Java
+- Objetivo: Dominar el mecanismo de extensión de Keycloak
 
-**POC-04-B** (future):
-- Full User Storage SPI implementation
-- Roles visible in Keycloak Admin Console
-- More classes, deeper Keycloak integration
+**POC-04-B** (futuro):
+- Implementación completa del User Storage SPI
+- Roles visibles en la Consola de Administración de Keycloak
+- Más clases, integración más profunda con Keycloak
 
-### Success Criteria
+### Criterios de Éxito
 
-✅ Login with `alan.turing` → JWT contains claim:
+✅ Login con `alan.turing` → JWT contiene el claim:
 ```json
 {
   "external_roles": ["DEVELOPER", "ARCHITECT", "ADMIN"]
 }
 ```
 
-These roles are fetched from PostgreSQL, **not** from Keycloak's internal database.
+Estos roles se obtienen de PostgreSQL, **no** de la base de datos interna de Keycloak.
 
 ---
 
-## 🏗️ Architecture
+## 🏗️ Arquitectura
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                        User Login                            │
-│                  (alan.turing / test123)                 │
+│                      Login de Usuario                        │
+│                  (alan.turing / test123)                     │
 └──────────────────────────┬──────────────────────────────────┘
                            │
                            ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                      Keycloak                                │
-│  - Native users (no SAML in POC-04-A)                       │
-│  - Realm: example-poc                                          │
+│                        Keycloak                              │
+│  - Usuarios nativos (sin SAML en POC-04-A)                  │
+│  - Realm: example-poc                                        │
 │  - Client: spring-client                                     │
 └──────────────────────────┬──────────────────────────────────┘
                            │
-                           │ Token generation triggers mapper
+                           │ La generación del token dispara el mapper
                            ▼
 ┌─────────────────────────────────────────────────────────────┐
 │       Custom Protocol Mapper (JAR)                           │
 │  ExternalRolesProtocolMapper.java                            │
-│  - Invoked during token creation                             │
-│  - Extracts username from UserSessionModel                   │
+│  - Invocado durante la creación del token                    │
+│  - Extrae el username del UserSessionModel                   │
 └──────────────────────────┬──────────────────────────────────┘
                            │
-                           │ JDBC query via HikariCP
+                           │ Consulta JDBC vía HikariCP
                            ▼
 ┌─────────────────────────────────────────────────────────────┐
-│       External PostgreSQL Database                           │
-│  Container: roles-db                                         │
-│  Table: user_roles (username, role_name)                     │
+│       Base de Datos PostgreSQL Externa                       │
+│  Contenedor: roles-db                                        │
+│  Tabla: user_roles (username, role_name)                     │
 │  Query: SELECT role_name WHERE username = ?                  │
 └──────────────────────────┬──────────────────────────────────┘
                            │
-                           │ Returns: ["DEVELOPER", "ARCHITECT", "ADMIN"]
+                           │ Devuelve: ["DEVELOPER", "ARCHITECT", "ADMIN"]
                            ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                    JWT Token                                 │
+│                      Token JWT                               │
 │  {                                                           │
-│    "sub": "alan.turing",                                 │
+│    "sub": "alan.turing",                                     │
 │    "external_roles": ["DEVELOPER", "ARCHITECT", "ADMIN"],    │
 │    ...                                                       │
 │  }                                                           │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-### Components
+### Componentes
 
-1. **keycloak-roles-mapper** (Maven module)
-   - `ExternalRolesProtocolMapper`: Keycloak SPI implementation
-   - `RoleRepository`: JDBC access layer with HikariCP
-   - SPI descriptor: Registers the mapper with Keycloak
+1. **keycloak-roles-mapper** (módulo Maven)
+   - `ExternalRolesProtocolMapper`: Implementación del SPI de Keycloak
+   - `RoleRepository`: Capa de acceso a datos con HikariCP
+   - Descriptor SPI: Registra el mapper en Keycloak
 
-2. **roles-db** (PostgreSQL container)
-   - Stores user-role mappings
-   - Initialized with test data via `init-db/01-schema.sql`
+2. **roles-db** (contenedor PostgreSQL)
+   - Almacena las asignaciones usuario-rol
+   - Inicializado con datos de prueba vía `init-db/01-schema.sql`
 
-3. **keycloak-db** (PostgreSQL container)
-   - Keycloak's internal database (realms, users, clients, etc.)
+3. **keycloak-db** (contenedor PostgreSQL)
+   - Base de datos interna de Keycloak (realms, usuarios, clients, etc.)
 
-4. **keycloak** (Custom Docker image)
-   - Based on `quay.io/keycloak/keycloak:23.0.7`
-   - Includes the custom mapper JAR in `/opt/keycloak/providers/`
+4. **keycloak** (imagen Docker personalizada)
+   - Basada en `quay.io/keycloak/keycloak:23.0.7`
+   - Incluye el JAR del mapper personalizado en `/opt/keycloak/providers/`
 
 ---
 
-## 📁 Project Structure
+## 📁 Estructura del Proyecto
 
 ```
 keycloak-experiment/
-├── pom.xml                              # Parent POM (multi-module)
-├── build.sh / build.bat                 # Build scripts (Linux/Windows)
-├── docker-compose.yml                   # Orchestrates 3 containers
+├── pom.xml                              # POM padre (multi-módulo)
+├── build.sh / build.bat                 # Scripts de compilación (Linux/Windows)
+├── docker-compose.yml                   # Orquesta los 3 contenedores
 │
-├── keycloak-roles-mapper/               # Maven module: Custom mapper
-│   ├── pom.xml                          # Dependencies: Keycloak SPI, PostgreSQL, HikariCP
+├── keycloak-roles-mapper/               # Módulo Maven: Mapper personalizado
+│   ├── pom.xml                          # Dependencias: Keycloak SPI, PostgreSQL, HikariCP
 │   └── src/main/
 │       ├── java/com/example/keycloak/mapper/
-│       │   ├── ExternalRolesProtocolMapper.java    # Main mapper logic
-│       │   └── RoleRepository.java                 # Database access
+│       │   ├── ExternalRolesProtocolMapper.java    # Lógica principal del mapper
+│       │   └── RoleRepository.java                 # Acceso a base de datos
 │       └── resources/META-INF/services/
-│           └── org.keycloak.protocol.ProtocolMapper  # SPI registration
+│           └── org.keycloak.protocol.ProtocolMapper  # Registro del SPI
 │
-├── spring-client/                       # Maven module: Optional test client
+├── spring-client/                       # Módulo Maven: Cliente de prueba opcional
 │   ├── pom.xml
 │   └── src/main/java/com/example/
 │       └── KeycloakExperimentApplication.java
 │
 ├── docker/
 │   └── keycloak/
-│       ├── Dockerfile                   # Keycloak + custom provider
-│       └── keycloak-roles-mapper.jar    # Copied here by build script
+│       ├── Dockerfile                   # Keycloak + provider personalizado
+│       └── keycloak-roles-mapper.jar    # Copiado aquí por el script de build
 │
 └── init-db/
-    └── 01-schema.sql                    # PostgreSQL schema + test data
+    └── 01-schema.sql                    # Esquema PostgreSQL + datos de prueba
 ```
 
 ---
 
-## 🔧 Prerequisites
+## 🔧 Prerrequisitos
 
-- **Java 17** or higher
-- **Maven 3.8+** (or use included Maven wrapper: `./mvnw`)
-- **Docker** and **Docker Compose**
-- **curl** (for testing) or **Postman**
-- **Optional**: Database client (DBeaver, pgAdmin) for inspecting databases
+- **Java 17** o superior
+- **Maven 3.8+** (o usar el Maven wrapper incluido: `./mvnw`)
+- **Docker** y **Docker Compose**
+- **curl** (para pruebas) o **Postman**
+- **Opcional**: Cliente de base de datos (DBeaver, pgAdmin) para inspeccionar las bases de datos
 
 ---
 
-## 🚀 Quick Start
+## 🚀 Inicio Rápido
 
-### 1. Build the Project
+### 1. Compilar el Proyecto
 
-#### On Linux/Mac:
+#### En Linux/Mac:
 ```bash
 chmod +x build.sh
 ./build.sh start
 ```
 
-#### On Windows:
+#### En Windows:
 ```cmd
 build.bat start
 ```
 
-This will:
-1. Compile the custom mapper JAR
-2. Copy it to the Docker context
-3. Build the Keycloak Docker image with the provider
-4. Start all containers (roles-db, keycloak-db, keycloak)
+Esto realizará:
+1. Compilar el JAR del mapper personalizado
+2. Copiarlo al contexto de Docker
+3. Construir la imagen Docker de Keycloak con el provider
+4. Iniciar todos los contenedores (roles-db, keycloak-db, keycloak)
 
-### 2. Wait for Keycloak to Start
+### 2. Esperar a que Keycloak Inicie
 
-Monitor the logs:
+Monitorizar los logs:
 ```bash
 docker-compose logs -f keycloak
 ```
 
-Wait for:
+Esperar hasta ver:
 ```
 Keycloak 23.0.7 started
 Listening on: http://0.0.0.0:8080
 ```
 
-### 3. Access Keycloak Admin Console
+### 3. Acceder a la Consola de Administración de Keycloak
 
-Open: **http://localhost:8080**
+Abrir: **http://localhost:8080**
 
-Login:
-- **Username**: `admin`
-- **Password**: `admin`
+Credenciales:
+- **Usuario**: `admin`
+- **Contraseña**: `admin`
 
 ---
 
-## ⚙️ Keycloak Configuration
+## ⚙️ Configuración de Keycloak
 
-### Step 1: Create Realm
+### Paso 1: Crear el Realm
 
-1. In Admin Console, hover over "Master" (top-left) → **Create Realm**
+1. En la Consola de Administración, pasar el cursor sobre "Master" (arriba a la izquierda) → **Create Realm**
 2. **Realm name**: `example-poc`
-3. Click **Create**
+3. Clic en **Create**
 
-### Step 2: Create Client
+### Paso 2: Crear el Client
 
-1. Navigate to **Clients** → **Create client**
+1. Navegar a **Clients** → **Create client**
 2. **Client ID**: `spring-client`
 3. **Client type**: `OpenID Connect`
-4. Click **Next**
+4. Clic en **Next**
 5. **Client authentication**: `ON` (confidential)
 6. **Authorization**: `OFF`
-7. **Authentication flow**: Enable:
+7. **Authentication flow**: Habilitar:
    - ✅ Standard flow
-   - ✅ Direct access grants (for testing with password grant)
-8. Click **Save**
+   - ✅ Direct access grants (para pruebas con password grant)
+8. Clic en **Save**
 
-### Step 3: Note Client Secret
+### Paso 3: Anotar el Client Secret
 
-1. Go to **Clients** → `spring-client` → **Credentials** tab
-2. Copy the **Client secret** (you'll need this for testing)
+1. Ir a **Clients** → `spring-client` → pestaña **Credentials**
+2. Copiar el **Client secret** (lo necesitarás para las pruebas)
 
-### Step 4: Create User
+### Paso 4: Crear el Usuario
 
-1. Navigate to **Users** → **Add user**
+1. Navegar a **Users** → **Add user**
 2. **Username**: `alan.turing`
-3. **Email**: `alan.turing@example.com` (optional)
+3. **Email**: `alan.turing@example.com` (opcional)
 4. **Email verified**: `ON`
-5. Click **Create**
-6. Go to **Credentials** tab
-7. Click **Set password**
+5. Clic en **Create**
+6. Ir a la pestaña **Credentials**
+7. Clic en **Set password**
 8. **Password**: `test123`
 9. **Temporary**: `OFF`
-10. Click **Save**
+10. Clic en **Save**
 
-### Step 5: Add Custom Protocol Mapper
+### Paso 5: Añadir el Protocol Mapper Personalizado
 
-1. Go to **Clients** → `spring-client` → **Client scopes** tab
-2. Click on `spring-client-dedicated` (the dedicated scope)
-3. Click **Add mapper** → **By configuration**
-4. Select **External Database Roles Mapper** (this is your custom mapper!)
-5. Configuration (default values are fine):
+1. Ir a **Clients** → `spring-client` → pestaña **Client scopes**
+2. Clic en `spring-client-dedicated` (el scope dedicado)
+3. Clic en **Add mapper** → **By configuration**
+4. Seleccionar **External Database Roles Mapper** (¡este es tu mapper personalizado!)
+5. Configuración (los valores por defecto están bien):
    - **Name**: `external-roles-mapper`
    - **Add to ID token**: `ON`
    - **Add to access token**: `ON`
    - **Add to userinfo**: `ON`
-6. Click **Save**
+6. Clic en **Save**
 
 ---
 
-## 🧪 Testing the Implementation
+## 🧪 Probando la Implementación
 
-### Method 1: Get Token via curl
+### Método 1: Obtener Token vía curl
 
 ```bash
 curl -X POST "http://localhost:8080/realms/example-poc/protocol/openid-connect/token" \
   -H "Content-Type: application/x-www-form-urlencoded" \
   -d "client_id=spring-client" \
-  -d "client_secret=YOUR_CLIENT_SECRET_HERE" \
+  -d "client_secret=TU_CLIENT_SECRET_AQUI" \
   -d "username=alan.turing" \
   -d "password=test123" \
   -d "grant_type=password"
 ```
 
-**Replace** `YOUR_CLIENT_SECRET_HERE` with the secret from Step 3 above.
+**Reemplaza** `TU_CLIENT_SECRET_AQUI` con el secret del Paso 3.
 
-### Method 2: Get Token via Postman
+### Método 2: Obtener Token vía Postman
 
 1. **POST** `http://localhost:8080/realms/example-poc/protocol/openid-connect/token`
 2. **Body**: `x-www-form-urlencoded`
    - `client_id`: `spring-client`
-   - `client_secret`: `<YOUR_SECRET>`
+   - `client_secret`: `<TU_SECRET>`
    - `username`: `alan.turing`
    - `password`: `test123`
    - `grant_type`: `password`
-3. Send request
+3. Enviar petición
 
-### Method 3: Decode and Verify JWT
+### Método 3: Decodificar y Verificar el JWT
 
-1. Copy the `access_token` from the response
-2. Go to **https://jwt.io**
-3. Paste the token
-4. Verify the payload contains:
+1. Copiar el `access_token` de la respuesta
+2. Ir a **https://jwt.io**
+3. Pegar el token
+4. Verificar que el payload contiene:
 
 ```json
 {
@@ -312,75 +312,75 @@ curl -X POST "http://localhost:8080/realms/example-poc/protocol/openid-connect/t
 }
 ```
 
-✅ **Success!** The `external_roles` claim proves the mapper is working.
+✅ **¡Éxito!** El claim `external_roles` demuestra que el mapper está funcionando.
 
 ---
 
-## 🔍 Troubleshooting
+## 🔍 Solución de Problemas
 
-### Issue: Mapper doesn't appear in Keycloak Admin Console
+### Problema: El mapper no aparece en la Consola de Administración de Keycloak
 
-**Symptoms**: "External Database Roles Mapper" not listed when adding mapper.
+**Síntomas**: "External Database Roles Mapper" no aparece en la lista al añadir un mapper.
 
-**Solutions**:
-1. Check JAR was built and copied:
+**Soluciones**:
+1. Verificar que el JAR se compiló y copió:
    ```bash
    ls -lh docker/keycloak/keycloak-roles-mapper.jar
    ```
-2. Rebuild Keycloak image:
+2. Reconstruir la imagen de Keycloak:
    ```bash
    docker-compose down
    ./build.sh docker
    docker-compose up -d
    ```
-3. Check Keycloak logs for provider registration:
+3. Revisar los logs de Keycloak buscando el registro del provider:
    ```bash
    docker-compose logs keycloak | grep -i "external.*role"
    ```
 
-### Issue: JWT doesn't contain `external_roles` claim
+### Problema: El JWT no contiene el claim `external_roles`
 
-**Symptoms**: Token is valid but missing the custom claim.
+**Síntomas**: El token es válido pero falta el claim personalizado.
 
-**Solutions**:
-1. Verify mapper is configured in client scope:
+**Soluciones**:
+1. Verificar que el mapper está configurado en el client scope:
    - Clients → spring-client → Client scopes → spring-client-dedicated
-   - Should see "external-roles-mapper" in the list
-2. Check mapper is enabled for access token:
-   - Edit mapper → "Add to access token" = ON
-3. Check database connectivity:
+   - Debería aparecer "external-roles-mapper" en la lista
+2. Comprobar que el mapper está habilitado para el access token:
+   - Editar mapper → "Add to access token" = ON
+3. Revisar la conectividad con la base de datos:
    ```bash
    docker-compose logs keycloak | grep -i "hikaricp"
    docker-compose logs keycloak | grep -i "roles"
    ```
 
-### Issue: Empty `external_roles` array
+### Problema: Array `external_roles` vacío
 
-**Symptoms**: Claim exists but `external_roles: []`
+**Síntomas**: El claim existe pero `external_roles: []`
 
-**Possible causes**:
-1. Username doesn't exist in roles database:
+**Posibles causas**:
+1. El username no existe en la base de datos de roles:
    ```bash
    docker-compose exec roles-db psql -U keycloak -d roles -c "SELECT * FROM user_roles WHERE username = 'alan.turing';"
    ```
-2. Database connection error (check logs)
-3. Username case mismatch (PostgreSQL is case-sensitive)
+2. Error de conexión a la base de datos (revisar logs)
+3. Diferencia de mayúsculas/minúsculas en el username (PostgreSQL es case-sensitive)
 
-### Issue: Database connection timeout
+### Problema: Timeout de conexión a la base de datos
 
-**Symptoms**: Logs show "Connection timeout" or "SQLException"
+**Síntomas**: Los logs muestran "Connection timeout" o "SQLException"
 
-**Solutions**:
-1. Verify roles-db is healthy:
+**Soluciones**:
+1. Verificar que roles-db está healthy:
    ```bash
    docker-compose ps
    docker-compose logs roles-db
    ```
-2. Check environment variables:
+2. Comprobar las variables de entorno:
    ```bash
    docker-compose exec keycloak env | grep ROLES_DB
    ```
-3. Test database connectivity from Keycloak container:
+3. Probar la conectividad desde el contenedor de Keycloak:
    ```bash
    docker-compose exec keycloak bash
    apt update && apt install -y postgresql-client
@@ -389,88 +389,88 @@ curl -X POST "http://localhost:8080/realms/example-poc/protocol/openid-connect/t
 
 ---
 
-## 🔧 Advanced Configuration
+## 🔧 Configuración Avanzada
 
-### Environment Variables for Roles Database
+### Variables de Entorno para la Base de Datos de Roles
 
-You can customize the database connection in `docker-compose.yml`:
+Puedes personalizar la conexión a la base de datos en `docker-compose.yml`:
 
 ```yaml
 environment:
   ROLES_DB_URL: jdbc:postgresql://roles-db:5432/roles
   ROLES_DB_USER: keycloak
   ROLES_DB_PASSWORD: keycloak
-  ROLES_DB_POOL_SIZE: 10           # HikariCP max pool size
-  ROLES_DB_MIN_IDLE: 2             # HikariCP min idle connections
-  ROLES_DB_CONN_TIMEOUT: 30000     # Connection timeout (ms)
-  ROLES_DB_IDLE_TIMEOUT: 600000    # Idle timeout (ms)
-  ROLES_DB_MAX_LIFETIME: 1800000   # Max connection lifetime (ms)
+  ROLES_DB_POOL_SIZE: 10           # Tamaño máximo del pool de HikariCP
+  ROLES_DB_MIN_IDLE: 2             # Conexiones mínimas idle de HikariCP
+  ROLES_DB_CONN_TIMEOUT: 30000     # Timeout de conexión (ms)
+  ROLES_DB_IDLE_TIMEOUT: 600000    # Timeout de inactividad (ms)
+  ROLES_DB_MAX_LIFETIME: 1800000   # Tiempo máximo de vida de conexión (ms)
 ```
 
-### Custom Logging
+### Logging Personalizado
 
-Enable debug logging for the mapper:
+Habilitar logging de debug para el mapper:
 
 ```yaml
 environment:
   QUARKUS_LOG_CATEGORY__COM_EXAMPLE_KEYCLOAK__LEVEL: debug
 ```
 
-View detailed logs:
+Ver logs detallados:
 ```bash
 docker-compose logs -f keycloak | grep "com.example.keycloak"
 ```
 
-### Persistent vs Ephemeral Data
+### Datos Persistentes vs Efímeros
 
-**Current setup**: Persistent (data survives `docker-compose down`)
+**Configuración actual**: Persistente (los datos sobreviven a `docker-compose down`)
 
-**To make ephemeral** (useful for testing):
+**Para hacerlo efímero** (útil para pruebas):
 ```yaml
 volumes:
   roles-db-data:
-    # Comment out or remove this volume
+    # Comentar o eliminar este volumen
 ```
 
-Then restart:
+Luego reiniciar:
 ```bash
-docker-compose down -v  # -v removes volumes
+docker-compose down -v  # -v elimina los volúmenes
 docker-compose up -d
 ```
 
 ---
 
-## 🎯 Next Steps
+## 🎯 Próximos Pasos
 
-### Immediate Enhancements (within POC-04-A)
+### Mejoras Inmediatas (dentro de POC-04-A)
 
-1. **Add more test users**:
-   - Edit `init-db/01-schema.sql`
-   - Add INSERT statements
-   - Rebuild: `docker-compose down -v && ./build.sh start`
+1. **Añadir más usuarios de prueba**:
+   - Editar `init-db/01-schema.sql`
+   - Añadir sentencias INSERT
+   - Reconstruir: `docker-compose down -v && ./build.sh start`
 
-2. **Implement JWT validation in Spring Client**:
-   - Add Spring Security + OAuth2 Resource Server
-   - Validate JWT signature
-   - Extract and use `external_roles` for authorization
+2. **Implementar validación de JWT en Spring Client**:
+   - Añadir Spring Security + OAuth2 Resource Server
+   - Validar la firma del JWT
+   - Extraer y usar `external_roles` para autorización
 
-3. **Add health check endpoint**:
-   - Verify database connectivity from mapper
-   - Expose via custom REST endpoint in Keycloak
+3. **Añadir endpoint de health check**:
+   - Verificar conectividad con la base de datos desde el mapper
+   - Exponer vía endpoint REST personalizado en Keycloak
 
 ### POC-04-B: User Storage SPI
 
-Evolve to full User Storage SPI implementation:
-- Roles visible in Keycloak Admin Console
-- Support for role assignments via Admin UI
-- Integration with Keycloak's role model
-- Caching and performance optimization
+Evolucionar hacia una implementación completa del User Storage SPI:
+- Roles visibles en la Consola de Administración de Keycloak
+- Soporte para asignación de roles vía Admin UI
+- Integración con el modelo de roles de Keycloak
+- Caché y optimización de rendimiento
 
 ---
 
-## 📚 Resources
+## 📚 Recursos
 
-- [Keycloak Documentation](https://www.keycloak.org/docs/latest/)
-- [Keycloak SPI Development Guide](https://www.keycloak.org/docs/latest/server_development/)
-- [HikariCP GitHub](https://github.com/brettwooldridge/HikariCP)
-- [JWT.io Debugger](https://jwt.io/)
+- [Documentación de Keycloak](https://www.keycloak.org/docs/latest/)
+- [Guía de Desarrollo de SPI de Keycloak](https://www.keycloak.org/docs/latest/server_development/)
+- [GitHub de HikariCP](https://github.com/brettwooldridge/HikariCP)
+- [Debugger de JWT](https://jwt.io/)
