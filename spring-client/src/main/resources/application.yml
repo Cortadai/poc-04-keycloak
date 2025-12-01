@@ -11,7 +11,7 @@ spring:
         registration:
           keycloak:
             client-id: spring-client
-            client-secret: ${CLIENT_SECRET}
+            client-secret: 2aF1lqlk5QQnqD4qO7pK6Devx3gadynz
             scope: openid,profile,email
             authorization-grant-type: authorization_code
             redirect-uri: "{baseUrl}/login/oauth2/code/{registrationId}"

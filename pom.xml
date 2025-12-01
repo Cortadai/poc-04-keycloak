@@ -15,6 +15,7 @@
     <modules>
         <module>keycloak-roles-mapper</module>
         <module>spring-client</module>
+        <module>spring-resource-server</module>
     </modules>
 
     <properties>

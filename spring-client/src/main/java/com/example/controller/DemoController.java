@@ -26,6 +26,7 @@ public class DemoController {
                 <ul>
                     <li><a href="/protected">Protected endpoint</a> (requires login)</li>
                     <li><a href="/admin">Admin endpoint</a> (requires ARCHITECT role)</li>
+                    <li><a href="/api/token">Get Access Token (JSON)</a> (for API testing)</li>
                 </ul>
             </body>
             </html>
